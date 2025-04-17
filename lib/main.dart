@@ -1,131 +1,104 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_nfc_kit/flutter_nfc_kit.dart';
-import 'package:flutter/services.dart';
+import 'package:nfc_manager/nfc_manager.dart';
 
-void main() {
-  runApp(const MyApp());
-}
+
+void main() => runApp(MyApp());
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      home: Scaffold(
-        appBar: AppBar(title: const Text('NFC Reader')),
-        body: const NfcReaderScreen(),
-      ),
+      title: 'NFC Reader',
+      home: NfcReaderPage(),
     );
   }
 }
 
-class NfcReaderScreen extends StatefulWidget {
-  const NfcReaderScreen({super.key});
-
+class NfcReaderPage extends StatefulWidget {
   @override
-  State<NfcReaderScreen> createState() => _NfcReaderScreenState();
+  _NfcReaderPageState createState() => _NfcReaderPageState();
 }
 
-class _NfcReaderScreenState extends State<NfcReaderScreen> {
-  String result = 'Tap a card to scan';
-  bool isLoading = false;
-  String? rawResponse;
+class _NfcReaderPageState extends State<NfcReaderPage> {
+  String _nfcData = 'Scan a tag...';
+  bool _isScanning = false;
 
-  Future<void> startNfcScan() async {
-    setState(() {
-      isLoading = true;
-      result = '🔍 Scanning for NFC tag...';
-      rawResponse = null;
-    });
+  void extractCardIdFromRawNfcData(String rawData) {
+    final regex = RegExp(r'identifier: \[([0-9,\s]+)\]');
+    final match = regex.firstMatch(rawData);
 
-    try {
-      final availability = await FlutterNfcKit.nfcAvailability;
-      if (availability != NFCAvailability.available) {
-        setState(() {
-          result = '❌ NFC is not available: $availability';
-          isLoading = false;
-        });
-        return;
-      }
+    if (match != null) {
+      final rawList = match.group(1); // e.g. "92, 30, 135, 159"
+      final cardId = rawList!
+          .split(',')
+          .map((e) => int.parse(e.trim()))
+          .map((e) => e.toRadixString(16).padLeft(2, '0'))
+          .join()
+          .toUpperCase();
 
-      final tag = await FlutterNfcKit.poll(timeout: const Duration(seconds: 30));
+      print('✅ Extracted Card ID: $cardId');
 
-      String info = '''
-✅ NFC Tag Detected
---------------------------
-• ID: ${tag.id}
-• Type: ${tag.type}
-• Standard: ${tag.standard}
-• ATQA: ${tag.atqa}
-• SAK: ${tag.sak}
-• Historical Bytes: ${tag.historicalBytes}
-• Protocol Info: ${tag.protocolInfo}
---------------------------
-''';
-
-      if (tag.type == NFCTagType.iso7816) {
-        final apdu = "00A4040007A0000000031010"; // Visa AID
-        final response = await FlutterNfcKit.transceive(apdu);
-        info += '📥 APDU Response: $response\n';
-        rawResponse = response;
-      } else {
-        info += '⚠️ This tag is not ISO7816 (e.g., not an EMV card).';
-      }
-
-      await FlutterNfcKit.finish();
-
-      setState(() {
-        result = info;
-        isLoading = false;
-      });
-    } catch (e) {
-      setState(() {
-        result = '❌ NFC Error: $e';
-        isLoading = false;
-      });
+      // Now you can send cardId to your backend
+      // Example: sendCardIdToBackend(cardId);
+    } else {
+      print('❌ Card identifier not found.');
     }
   }
 
-  void copyToClipboard() {
-    if (rawResponse != null) {
-      Clipboard.setData(ClipboardData(text: rawResponse!));
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Copied response to clipboard')),
-      );
+
+  void _startScanning() async {
+    bool isAvailable = await NfcManager.instance.isAvailable();
+    if (!isAvailable) {
+      setState(() => _nfcData = 'NFC is not available on this device');
+      return;
     }
+
+    setState(() => _isScanning = true);
+
+    NfcManager.instance.startSession(
+      onDiscovered: (NfcTag tag) async {
+        setState(() {
+          _nfcData = tag.data.toString();
+          debugPrint("\n$_nfcData\n");
+         // final String cardId = identifier.map((e) => e.toRadixString(16).padLeft(2, '0')).join().toUpperCase();
+          extractCardIdFromRawNfcData(_nfcData);
+        //  print('Card ID: $cardId');
+
+          _isScanning = false;
+        });
+        NfcManager.instance.stopSession();
+      },
+      onError: (error) async {
+        setState(() {
+          _nfcData = 'Error reading NFC tag: $error';
+          _isScanning = false;
+        });
+        NfcManager.instance.stopSession(errorMessage: error.toString());
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    NfcManager.instance.stopSession();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20.0),
+    return Scaffold(
+      appBar: AppBar(title: Text('NFC Reader')),
+      body: Padding(
+        padding: const EdgeInsets.all(20.0),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            if (isLoading)
-              const CircularProgressIndicator()
-            else
-              Text(
-                result,
-                textAlign: TextAlign.left,
-                style: const TextStyle(fontSize: 16),
-              ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: startNfcScan,
-              icon: const Icon(Icons.nfc),
-              label: const Text('Start NFC Scan'),
+            Text(_nfcData, textAlign: TextAlign.center),
+            SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _isScanning ? null : _startScanning,
+              child: Text('Start NFC Scan'),
             ),
-            if (rawResponse != null) ...[
-              const SizedBox(height: 10),
-              OutlinedButton.icon(
-                onPressed: copyToClipboard,
-                icon: const Icon(Icons.copy),
-                label: const Text('Copy Raw Response'),
-              ),
-            ]
           ],
         ),
       ),
